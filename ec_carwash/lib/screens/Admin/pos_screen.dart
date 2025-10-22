@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // ✅ Firestore
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:ec_carwash/data_models/services_data.dart';
 import 'package:ec_carwash/data_models/inventory_data.dart';
-import 'package:ec_carwash/data_models/customer_data.dart';
+import 'package:ec_carwash/data_models/customer_data_unified.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -125,21 +125,49 @@ class _POSScreenState extends State<POSScreen> {
       return;
     }
 
-    setState(() {
-      final index = cart.indexWhere(
-        (item) => item["code"] == code && item["category"] == category,
-      );
-      if (index >= 0) {
+    // Get the service name from servicesData
+    final serviceName = servicesData[code]?["name"] ?? code;
+
+    final index = cart.indexWhere(
+      (item) => item["code"] == code && item["category"] == category,
+    );
+
+    if (index >= 0) {
+      // Already in cart - increase quantity and show notification
+      setState(() {
         cart[index]["quantity"] = (cart[index]["quantity"] ?? 0) + 1;
-      } else {
+      });
+
+      if (mounted) {
+        final currentQty = cart[index]["quantity"] as int;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.info, color: Colors.white),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('$serviceName already in cart! Quantity increased to $currentQty'),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.yellow.shade700,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } else {
+      // New item - add to cart
+      setState(() {
         cart.add({
           "code": code,
+          "name": serviceName,
           "category": category,
           "price": price.toDouble(),
           "quantity": 1,
         });
-      }
-    });
+      });
+    }
   }
 
   void removeFromCart(int index) {
@@ -214,7 +242,7 @@ class _POSScreenState extends State<POSScreen> {
     try {
       // Try plate search first (more specific)
       if (query.length >= 3) {
-        final customer = await CustomerService.getCustomerByPlateNumber(query);
+        final customer = await CustomerManager.getCustomerByPlateNumber(query);
         if (customer != null) {
           setState(() {
             _searchResults = [customer];
@@ -236,7 +264,7 @@ class _POSScreenState extends State<POSScreen> {
 
         for (final variation in variations) {
           try {
-            final customers = await CustomerService.searchCustomersByName(variation);
+            final customers = await CustomerManager.searchCustomersByName(variation);
             if (customers.isNotEmpty) {
               setState(() {
                 _searchResults = customers;
@@ -298,7 +326,7 @@ class _POSScreenState extends State<POSScreen> {
       'name': base.name,
       'plateNumber': plate,
       'email': base.email,
-      'contactNumber': base.phoneNumber,
+      'contactNumber': base.contactNumber,
       if (_selectedVehicleType != null && _selectedVehicleType!.isNotEmpty)
         'vehicleType': _selectedVehicleType,
       'lastVisit': base.lastVisit.toIso8601String(),
@@ -332,7 +360,7 @@ class _POSScreenState extends State<POSScreen> {
         name: nameController.text.trim(),
         plateNumber: plateController.text.trim().toUpperCase(),
         email: emailController.text.trim(),
-        phoneNumber: phoneController.text.trim(),
+        contactNumber: phoneController.text.trim(),
         createdAt: currentCustomer?.createdAt ?? DateTime.now(),
         lastVisit: DateTime.now(),
         vehicleType: _selectedVehicleType,
@@ -400,7 +428,7 @@ class _POSScreenState extends State<POSScreen> {
                 final vehicleType = entry.key;
                 final price = (entry.value as num).toDouble();
                 IconData icon = Icons.directions_car;
-                Color color = Colors.blue;
+                Color color = Colors.yellow.shade700;
 
                 if (vehicleType.contains('Motorcycle')) {
                   icon = Icons.motorcycle;
@@ -471,16 +499,7 @@ class _POSScreenState extends State<POSScreen> {
   }) async {
     await addToCart(code, category, price);
     await _persistVehicleTypeIfNeeded(category, remember);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Added $code ($category) to cart'),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
+    // Notification removed as requested
   }
 
   @override
@@ -489,7 +508,9 @@ class _POSScreenState extends State<POSScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final isWide = MediaQuery.of(context).size.width > 700;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isWide = screenWidth > 700;
+    final isTablet = screenWidth > 600 && screenWidth <= 1024; // iPad mini range
     final codes = servicesData.keys.toList();
 
     codes.sort((a, b) {
@@ -514,18 +535,20 @@ class _POSScreenState extends State<POSScreen> {
       children: [
         // Product Codes Grid
         Expanded(
-          flex: 4,
+          flex: isTablet ? 3 : 4, // Reduce grid space for tablets
           child: GridView.builder(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.all(isTablet ? 8 : 16), // Smaller padding for tablets
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: MediaQuery.of(context).size.width > 1400
+              crossAxisCount: isTablet
+                  ? 3  // Fewer columns for tablets to prevent overflow
+                  : screenWidth > 1400
                   ? 6
-                  : MediaQuery.of(context).size.width > 1200
+                  : screenWidth > 1200
                   ? 5
                   : 4,
-              childAspectRatio: 0.85,
-              crossAxisSpacing: 8,
-              mainAxisSpacing: 8,
+              childAspectRatio: isTablet ? 0.9 : 0.85, // Slightly taller cards for tablets
+              crossAxisSpacing: isTablet ? 6 : 8,
+              mainAxisSpacing: isTablet ? 6 : 8,
             ),
             itemCount: codes.length,
             itemBuilder: (context, index) {
@@ -533,75 +556,137 @@ class _POSScreenState extends State<POSScreen> {
               final product = servicesData[code];
               if (product == null) return const SizedBox();
 
-              return Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(16),
-                  onTap: () =>
-                      _handleAddService(code), // auto-vehicleType or ask once
-                  // ⛔ removed onLongPress to prevent changing when saved
-                  child: Container(
+              // Check if service is applicable for current vehicle type
+              final prices = product["prices"] as Map<String, dynamic>;
+              final bool isApplicable = _vehicleTypeForCustomer == null ||
+                                       _vehicleTypeForCustomer!.isEmpty ||
+                                       prices.containsKey(_vehicleTypeForCustomer);
+
+              return Opacity(
+                opacity: isApplicable ? 1.0 : 0.4,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: isApplicable ? () => _handleAddService(code) : null,
+                    splashColor: isApplicable ? Colors.yellow.shade200 : null,
+                    highlightColor: isApplicable ? Colors.yellow.shade100 : null,
+                    child: Container(
                     decoration: BoxDecoration(
-                      gradient: const LinearGradient(
+                      // Modern gradient with brand colors
+                      gradient: LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [Colors.white, Color(0xFFF8F9FA), Colors.white],
+                        colors: [
+                          Colors.white,
+                          Colors.yellow.shade50,
+                          Colors.white,
+                        ],
+                        stops: const [0.0, 0.5, 1.0],
                       ),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.grey.shade300, width: 1),
+                      borderRadius: BorderRadius.circular(12),
+                      // Thin black stroke as requested
+                      border: Border.all(
+                        color: Colors.black87,
+                        width: 1.0,
+                      ),
+                      // Enhanced shadow for depth
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.grey.withValues(alpha: 0.2),
-                          blurRadius: 4,
+                          color: Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 6,
                           offset: const Offset(0, 2),
+                        ),
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
                         ),
                       ],
                     ),
                     child: Padding(
-                      padding: const EdgeInsets.all(10.0),
+                      padding: EdgeInsets.all(isTablet ? 8.0 : 12.0),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
+                          // Service code chip with brand styling
                           Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 6,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: isTablet ? 10 : 12,
+                              vertical: isTablet ? 6 : 8,
                             ),
                             decoration: BoxDecoration(
-                              color: Colors.grey.shade800,
-                              borderRadius: BorderRadius.circular(6),
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Colors.yellow.shade700,
+                                  Colors.yellow.shade800,
+                                ],
+                              ),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: Colors.black54,
+                                width: 0.5,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.2),
+                                  blurRadius: 3,
+                                  offset: const Offset(0, 1),
+                                ),
+                              ],
                             ),
                             child: Text(
-                              code,
-                              style: const TextStyle(
+                              _getDisplayCode(code, isTablet),
+                              style: TextStyle(
                                 fontWeight: FontWeight.bold,
-                                fontSize: 18,
-                                color: Colors.white,
+                                fontSize: isTablet ? 16 : 18,
+                                color: Colors.black87,
+                                letterSpacing: 0.5,
                               ),
                             ),
                           ),
-                          const SizedBox(height: 6),
+                          SizedBox(height: isTablet ? 6 : 8),
+                          // Service name with better typography
                           Expanded(
                             child: Center(
                               child: Text(
                                 product["name"],
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
-                                  fontSize: 12,
+                                  fontSize: isTablet ? 11 : 13,
                                   fontWeight: FontWeight.w600,
-                                  color: Colors.grey.shade700,
-                                  height: 1.3,
+                                  color: Colors.grey.shade800,
+                                  height: 1.2,
+                                  letterSpacing: 0.2,
                                 ),
                                 maxLines: 3,
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
                           ),
+                          // Add a subtle price indicator at the bottom
+                          Container(
+                            width: double.infinity,
+                            height: 3,
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  Colors.yellow.shade600,
+                                  Colors.yellow.shade400,
+                                  Colors.yellow.shade600,
+                                ],
+                              ),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
                         ],
                       ),
                     ),
                   ),
-                ),
+                    ),
+                  ),
               );
             },
           ),
@@ -610,7 +695,7 @@ class _POSScreenState extends State<POSScreen> {
         // Side panel
         if (isWide)
           Expanded(
-            flex: 2,
+            flex: isTablet ? 3 : 2, // Increase side panel space for tablets
             child: Column(
               children: [
                 // Dynamic sizing based on search state
@@ -630,19 +715,26 @@ class _POSScreenState extends State<POSScreen> {
   }
 
   Widget _buildCustomerForm() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isTablet = screenWidth > 600 && screenWidth <= 1024;
+
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(isTablet ? 12 : 16), // Smaller padding for tablets
       child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                const Icon(Icons.person, color: Colors.grey),
+                Icon(Icons.person, color: Theme.of(context).colorScheme.primary),
                 const SizedBox(width: 8),
-                const Text(
+                Text(
                   "Customer Information",
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: isTablet ? 16 : 18,
+                    color: Theme.of(context).colorScheme.secondary,
+                  ),
                 ),
                 const Spacer(),
                 if (_currentCustomerId != null || currentCustomer != null)
@@ -659,11 +751,31 @@ class _POSScreenState extends State<POSScreen> {
               if (currentCustomer != null || _currentCustomerId != null) ...[
                 // Selected Customer Display
                 Container(
-                  padding: const EdgeInsets.all(16),
+                  padding: EdgeInsets.all(isTablet ? 12 : 16),
                   decoration: BoxDecoration(
-                    color: Colors.green.shade50,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.green.shade50,
+                        Colors.white,
+                        Colors.green.shade50,
+                      ],
+                    ),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.green.shade200),
+                    border: Border.all(color: Colors.black87, width: 1.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.green.withValues(alpha: 0.2),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.1),
+                        blurRadius: 4,
+                        offset: const Offset(0, 1),
+                      ),
+                    ],
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -721,13 +833,13 @@ class _POSScreenState extends State<POSScreen> {
                                       Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                         decoration: BoxDecoration(
-                                          color: Colors.blue.shade100,
+                                          color: Colors.yellow.shade100,
                                           borderRadius: BorderRadius.circular(4),
                                         ),
                                         child: Text(
                                           _vehicleTypeForCustomer!,
                                           style: TextStyle(
-                                            color: Colors.blue.shade700,
+                                            color: Colors.black87,
                                             fontSize: 11,
                                             fontWeight: FontWeight.w600,
                                           ),
@@ -786,7 +898,7 @@ class _POSScreenState extends State<POSScreen> {
                         decoration: InputDecoration(
                           labelText: "Search by Plate or Name",
                           hintText: "e.g. ABC1234 or John Doe (Press Enter to search)",
-                          prefixIcon: Icon(Icons.search, color: Colors.blue.shade600),
+                          prefixIcon: Icon(Icons.search, color: Colors.black87),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
@@ -796,7 +908,7 @@ class _POSScreenState extends State<POSScreen> {
                           ),
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(color: Colors.blue.shade600, width: 2),
+                            borderSide: BorderSide(color: Colors.yellow.shade700, width: 2),
                           ),
                           filled: true,
                           fillColor: Colors.grey.shade50,
@@ -890,7 +1002,7 @@ class _POSScreenState extends State<POSScreen> {
                 decoration: InputDecoration(
                   labelText: "Plate Number *",
                   hintText: "e.g. ABC1234",
-                  prefixIcon: Icon(Icons.directions_car, color: Colors.blue.shade600),
+                  prefixIcon: Icon(Icons.directions_car, color: Colors.black87),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -915,7 +1027,7 @@ class _POSScreenState extends State<POSScreen> {
                 decoration: InputDecoration(
                   labelText: "Customer Name *",
                   hintText: "e.g. John Doe",
-                  prefixIcon: Icon(Icons.person, color: Colors.blue.shade600),
+                  prefixIcon: Icon(Icons.person, color: Colors.black87),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -939,7 +1051,7 @@ class _POSScreenState extends State<POSScreen> {
                 decoration: InputDecoration(
                   labelText: "Email (Optional)",
                   hintText: "e.g. john@example.com",
-                  prefixIcon: Icon(Icons.email, color: Colors.blue.shade600),
+                  prefixIcon: Icon(Icons.email, color: Colors.black87),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -964,7 +1076,7 @@ class _POSScreenState extends State<POSScreen> {
                 decoration: InputDecoration(
                   labelText: "Contact Number (Optional)",
                   hintText: "e.g. +63 912 345 6789",
-                  prefixIcon: Icon(Icons.phone, color: Colors.blue.shade600),
+                  prefixIcon: Icon(Icons.phone, color: Colors.black87),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -989,7 +1101,7 @@ class _POSScreenState extends State<POSScreen> {
                 decoration: InputDecoration(
                   labelText: "Vehicle Type (Optional)",
                   hintText: "Select vehicle type",
-                  prefixIcon: Icon(Icons.directions_car, color: Colors.blue.shade600),
+                  prefixIcon: Icon(Icons.directions_car, color: Colors.black87),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -1038,14 +1150,26 @@ class _POSScreenState extends State<POSScreen> {
               Container(
                 height: _getSearchResultsMaxHeight(),
                 decoration: BoxDecoration(
-                  color: Colors.grey.shade50,
-                  border: Border.all(color: Colors.blue.shade200),
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.yellow.shade50,
+                      Colors.white,
+                    ],
+                  ),
+                  border: Border.all(color: Colors.black87, width: 1.5),
                   borderRadius: BorderRadius.circular(12),
                   boxShadow: [
                     BoxShadow(
+                      color: Colors.blue.withValues(alpha: 0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                    BoxShadow(
                       color: Colors.black.withValues(alpha: 0.1),
                       blurRadius: 4,
-                      offset: const Offset(0, 2),
+                      offset: const Offset(0, 1),
                     ),
                   ],
                 ),
@@ -1211,11 +1335,25 @@ class _POSScreenState extends State<POSScreen> {
 
             // Service Time (always visible and separate from customer data)
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: EdgeInsets.all(isTablet ? 10 : 12),
               decoration: BoxDecoration(
-                color: Colors.blue.shade50,
+                gradient: LinearGradient(
+                  colors: [Colors.yellow.shade50, Colors.white],
+                ),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.blue.shade200),
+                border: Border.all(color: Colors.black87, width: 1.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.yellow.withValues(alpha: 0.3),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.1),
+                    blurRadius: 3,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
               ),
               child: Row(
                 children: [
@@ -1238,6 +1376,29 @@ class _POSScreenState extends State<POSScreen> {
                         initialTime: _selectedTime,
                       );
                       if (picked != null) {
+                        // Prevent selecting past time
+                        final now = DateTime.now();
+                        final selectedDateTime = DateTime(
+                          now.year,
+                          now.month,
+                          now.day,
+                          picked.hour,
+                          picked.minute,
+                        );
+
+                        // Check if selected time is in the past
+                        if (selectedDateTime.isBefore(now)) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: const Text('Cannot select past time'),
+                                backgroundColor: Colors.red.shade700,
+                              ),
+                            );
+                          }
+                          return;
+                        }
+
                         setState(() => _selectedTime = picked);
                       }
                     },
@@ -1281,20 +1442,113 @@ class _POSScreenState extends State<POSScreen> {
   }
 
   Widget _buildCart() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isTablet = screenWidth > 600 && screenWidth <= 1024;
+
     return Container(
       decoration: BoxDecoration(
-        color: Colors.grey.shade100,
-        border: const Border(top: BorderSide(color: Colors.black12)),
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Colors.yellow.shade50,
+            Colors.white,
+          ],
+        ),
+        border: Border.all(color: Colors.black87, width: 1),
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(12),
+          topRight: Radius.circular(12),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.1),
+            blurRadius: 8,
+            offset: const Offset(0, -2),
+          ),
+        ],
       ),
       child: Column(
         children: [
-          const ListTile(
-            title: Text("Cart", style: TextStyle(fontWeight: FontWeight.bold)),
+          // Cart header with theme styling
+          Container(
+            width: double.infinity,
+            padding: EdgeInsets.all(isTablet ? 12 : 16),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.yellow.shade700, Colors.yellow.shade800],
+              ),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(11),
+                topRight: Radius.circular(11),
+              ),
+              border: Border(
+                bottom: BorderSide(color: Colors.black54, width: 0.5),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.shopping_cart,
+                  color: Colors.black87,
+                  size: isTablet ? 20 : 24,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  "Cart",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: isTablet ? 16 : 18,
+                    color: Colors.black87,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const Spacer(),
+                if (cart.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black87,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${cart.length}',
+                      style: TextStyle(
+                        color: Colors.yellow.shade700,
+                        fontWeight: FontWeight.bold,
+                        fontSize: isTablet ? 12 : 14,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
+          // Cart content
           Expanded(
             child: cart.isEmpty
-                ? const Center(child: Text("No items in cart"))
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.shopping_cart_outlined,
+                          size: isTablet ? 48 : 64,
+                          color: Colors.grey.shade400,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          "No items in cart",
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: isTablet ? 14 : 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
                 : ListView.builder(
+                    padding: EdgeInsets.all(isTablet ? 8 : 12),
                     itemCount: cart.length,
                     itemBuilder: (context, index) {
                       final item = cart[index];
@@ -1302,34 +1556,154 @@ class _POSScreenState extends State<POSScreen> {
                       final qty = (item["quantity"] ?? 0) as int;
                       final subtotal = price * qty;
 
-                      return ListTile(
-                        title: Text("${item["code"]} - ${item["category"]}"),
-                        subtitle: Text(
-                          "₱${price.toStringAsFixed(2)} x $qty = ₱${subtotal.toStringAsFixed(2)}",
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          border: Border.all(color: Colors.black26, width: 0.5),
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.05),
+                              blurRadius: 4,
+                              offset: const Offset(0, 1),
+                            ),
+                          ],
                         ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.remove_circle_outline),
-                          onPressed: () => removeFromCart(index),
+                        child: ListTile(
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: isTablet ? 12 : 16,
+                            vertical: isTablet ? 4 : 8,
+                          ),
+                          leading: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [Colors.yellow.shade600, Colors.yellow.shade700],
+                              ),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.black54, width: 0.5),
+                            ),
+                            child: Text(
+                              _getDisplayCode(item["code"], isTablet),
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: isTablet ? 10 : 12,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ),
+                          title: Text(
+                            item["category"],
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: isTablet ? 13 : 14,
+                              color: Colors.grey.shade800,
+                            ),
+                          ),
+                          subtitle: Text(
+                            "₱${price.toStringAsFixed(2)} x $qty = ₱${subtotal.toStringAsFixed(2)}",
+                            style: TextStyle(
+                              fontSize: isTablet ? 11 : 12,
+                              color: Colors.grey.shade600,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          trailing: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade50,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.red.shade200, width: 0.5),
+                            ),
+                            child: IconButton(
+                              icon: Icon(
+                                Icons.remove_circle_outline,
+                                color: Colors.red.shade600,
+                                size: isTablet ? 20 : 24,
+                              ),
+                              onPressed: () => removeFromCart(index),
+                              padding: EdgeInsets.all(isTablet ? 4 : 8),
+                              constraints: const BoxConstraints(),
+                            ),
+                          ),
                         ),
                       );
                     },
                   ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          // Cart footer with total and checkout
+          Container(
+            padding: EdgeInsets.all(isTablet ? 12 : 16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border(
+                top: BorderSide(color: Colors.black26, width: 0.5),
+              ),
+              borderRadius: const BorderRadius.only(
+                bottomLeft: Radius.circular(11),
+                bottomRight: Radius.circular(11),
+              ),
+            ),
+            child: Column(
               children: [
-                Text(
-                  "Total: ₱${total.toStringAsFixed(2)}",
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      "Total:",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: isTablet ? 16 : 18,
+                        color: Colors.grey.shade800,
+                      ),
+                    ),
+                    Text(
+                      "₱${total.toStringAsFixed(2)}",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: isTablet ? 18 : 20,
+                        color: Colors.green.shade700,
+                      ),
+                    ),
+                  ],
                 ),
-                ElevatedButton(
-                  onPressed: cart.isEmpty ? null : _showCartSummary,
-                  child: const Text("Checkout"),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: cart.isEmpty ? null : _showCartSummary,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: cart.isEmpty ? Colors.grey.shade300 : Colors.yellow.shade700,
+                      foregroundColor: cart.isEmpty ? Colors.grey.shade600 : Colors.black87,
+                      padding: EdgeInsets.symmetric(vertical: isTablet ? 12 : 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: BorderSide(
+                          color: cart.isEmpty ? Colors.grey.shade400 : Colors.black54,
+                          width: 0.5,
+                        ),
+                      ),
+                      elevation: cart.isEmpty ? 0 : 2,
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.payment,
+                          size: isTablet ? 18 : 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          "Checkout",
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: isTablet ? 14 : 16,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -1348,31 +1722,155 @@ class _POSScreenState extends State<POSScreen> {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setState) {
-            return AlertDialog(
-              title: const Text("Summary Cart"),
-              content: SingleChildScrollView(
+            return Dialog(
+              insetPadding: const EdgeInsets.all(40),
+              child: Container(
+                width: MediaQuery.of(context).size.width * 0.7,
+                height: MediaQuery.of(context).size.height * 0.6,
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.black87, width: 1.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
+                      children: [
+                        Icon(Icons.receipt_long, size: 32, color: Colors.yellow.shade700),
+                        const SizedBox(width: 12),
+                        Text(
+                          "Order Summary",
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.grey.shade800,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close, size: 28),
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.grey.shade100,
+                            foregroundColor: Colors.grey.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    // Content
+                    Expanded(
+                      child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Customer Information Section
+                    if (nameController.text.trim().isNotEmpty || plateController.text.trim().isNotEmpty) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [Colors.blue.shade50, Colors.blue.shade100],
+                          ),
+                          border: Border.all(color: Colors.blue.shade300, width: 1.5),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.person, color: Theme.of(context).colorScheme.primary, size: 20),
+                                const SizedBox(width: 8),
+                                Text(
+                                  "Customer Information",
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                    color: Theme.of(context).colorScheme.secondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            if (nameController.text.trim().isNotEmpty)
+                              Text(
+                                "Name: ${nameController.text.trim()}",
+                                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+                              ),
+                            if (plateController.text.trim().isNotEmpty)
+                              Text(
+                                "Plate: ${plateController.text.trim().toUpperCase()}",
+                                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    // Services Section
+                    Text(
+                      "Services:",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     ...cart.map((item) {
                       final price = (item["price"] as num).toDouble();
                       final qty = (item["quantity"] ?? 0) as int;
                       final subtotal = price * qty;
-                      return ListTile(
-                        dense: true,
-                        title: Text("${item["code"]} - ${item["category"]}"),
-                        subtitle: Text(
-                          "₱${price.toStringAsFixed(2)} x $qty = ₱${subtotal.toStringAsFixed(2)}",
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          border: Border.all(color: Colors.grey.shade200),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              "${item["code"]} - ${item["category"]}",
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              "₱${price.toStringAsFixed(2)} x $qty = ₱${subtotal.toStringAsFixed(2)}",
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
                         ),
                       );
                     }),
-                    const Divider(),
+                    const Divider(thickness: 2),
                     Text(
                       "Total: ₱${total.toStringAsFixed(2)}",
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 16,
+                        fontSize: 18,
+                        color: Colors.green.shade700,
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -1381,9 +1879,16 @@ class _POSScreenState extends State<POSScreen> {
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                       ),
-                      decoration: const InputDecoration(
-                        labelText: "Cash",
-                        border: OutlineInputBorder(),
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                      decoration: InputDecoration(
+                        labelText: "Cash Amount",
+                        labelStyle: const TextStyle(fontSize: 15),
+                        border: const OutlineInputBorder(),
+                        focusedBorder: OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.yellow.shade700, width: 2),
+                        ),
+                        prefixIcon: Icon(Icons.payments, color: Colors.green.shade600),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                       ),
                       onChanged: (val) {
                         final cash = double.tryParse(val) ?? 0;
@@ -1392,43 +1897,118 @@ class _POSScreenState extends State<POSScreen> {
                         });
                       },
                     ),
-                    const SizedBox(height: 12),
-                    Text(
-                      "Change: ₱${change.toStringAsFixed(2)}",
-                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: change >= 0 ? Colors.green.shade50 : Colors.red.shade50,
+                        border: Border.all(
+                          color: change >= 0 ? Colors.green.shade300 : Colors.red.shade300,
+                          width: 1.5,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            "Change:",
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                          Text(
+                            "₱${change.toStringAsFixed(2)}",
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                              color: change >= 0 ? Colors.green.shade700 : Colors.red.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text("Cancel"),
+            ),
+            const SizedBox(height: 24),
+            // Footer with buttons
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: Colors.grey.shade600, width: 1.5),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    child: const Text(
+                      "Cancel",
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                    ),
+                  ),
                 ),
-                ElevatedButton(
-                  onPressed: (change < 0)
-                      ? null
-                      : () async {
-                          final navigator = Navigator.of(context);
-                          final cash = double.tryParse(cashController.text) ?? 0;
+                const SizedBox(width: 16),
+                Expanded(
+                  flex: 2,
+                  child: ElevatedButton(
+                    onPressed: (change < 0)
+                        ? null
+                        : () async {
+                            final navigator = Navigator.of(context);
+                            final cash = double.tryParse(cashController.text) ?? 0;
 
-                          for (final item in cart) {
-                            final code = item["code"] as String;
-                            final quantity = item["quantity"] as int;
-                            await _consumeInventory(code, quantity);
-                          }
+                            for (final item in cart) {
+                              final code = item["code"] as String;
+                              final quantity = item["quantity"] as int;
+                              await _consumeInventory(code, quantity);
+                            }
 
-                          if (mounted) {
-                            navigator.pop();
-                            _showTeamSelection(
-                              cash: cash,
-                              change: change,
-                            );
-                          }
-                        },
-                  child: const Text("Payment"),
+                            if (mounted) {
+                              navigator.pop();
+                              _showTeamSelection(
+                                cash: cash,
+                                change: change,
+                              );
+                            }
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: change < 0 ? Colors.grey.shade300 : Colors.yellow.shade700,
+                      foregroundColor: change < 0 ? Colors.grey.shade600 : Colors.black87,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: BorderSide(
+                          color: change < 0 ? Colors.grey.shade400 : Colors.black54,
+                          width: 1,
+                        ),
+                      ),
+                      elevation: change < 0 ? 0 : 4,
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.payment, size: 24),
+                        const SizedBox(width: 8),
+                        const Text(
+                          "Proceed to Payment",
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ],
+            ),
+          ],
+        ),
+      ),
             );
           },
         );
@@ -1498,7 +2078,7 @@ class _POSScreenState extends State<POSScreen> {
         "transactionAt": Timestamp.fromDate(txnDateTime),
         "status": "paid",
         "assignedTeam": assignedTeam ?? "Unassigned",
-        "teamCommission": assignedTeam != null ? (totalAmount * 0.35) : 0.0, // 35% commission
+        "teamCommission": 0.0, // Commission added only when booking is marked completed
         "createdAt": FieldValue.serverTimestamp(),
       };
 
@@ -1516,6 +2096,21 @@ class _POSScreenState extends State<POSScreen> {
         totalAmount: totalAmount,
         assignedTeam: assignedTeam,
       );
+
+      // Clear cart and reset customer after successful transaction
+      if (mounted) {
+        setState(() {
+          cart.clear();
+          currentCustomer = null;
+          _currentCustomerId = null;
+          _vehicleTypeForCustomer = null;
+          _selectedVehicleType = null;
+          nameController.clear();
+          plateController.clear();
+          phoneController.clear();
+          emailController.clear();
+        });
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -1535,30 +2130,27 @@ class _POSScreenState extends State<POSScreen> {
     String? assignedTeam,
   }) async {
     try {
-      // Follow the customer app booking structure:
-      // - selectedDateTime (Timestamp)
-      // - date (ISO)
-      // - time (formatted string)
-      // - services (same array)
+      // Use unified booking structure with scheduledDateTime (not selectedDateTime)
       final bookingData = {
         "userId": customerMap["id"] ?? "",
         "userEmail": customerMap["email"] ?? "",
         "userName": customerMap["name"] ?? "",
         "plateNumber": customerMap["plateNumber"] ?? "",
         "contactNumber": customerMap["contactNumber"] ?? "",
+        "vehicleType": customerMap["vehicleType"],
 
-        "selectedDateTime": Timestamp.fromDate(txnDateTime),
-        "date": txnDateTime.toIso8601String(),
-        "time": "${txnDateTime.hour.toString().padLeft(2, '0')}:${txnDateTime.minute.toString().padLeft(2, '0')}",
+        // 🔑 UNIFIED FIELD: scheduledDateTime (for Firestore queries to work)
+        "scheduledDateTime": Timestamp.fromDate(txnDateTime),
 
         "services": services, // 🔑 unified key
-        "total": totalAmount,
+        "totalAmount": totalAmount, // Use totalAmount for consistency
 
         "status": "approved",
+        "paymentStatus": "paid", // POS transactions are already paid
         "source": "pos",
         "transactionId": transactionId,
         "assignedTeam": assignedTeam ?? "Unassigned",
-        "teamCommission": assignedTeam != null ? (totalAmount * 0.35) : 0.0, // 35% commission
+        "teamCommission": 0.0, // Commission added only when booking is marked completed
 
         "createdAt": FieldValue.serverTimestamp(),
       };
@@ -1572,6 +2164,24 @@ class _POSScreenState extends State<POSScreen> {
   String _getServiceName(String serviceCode) {
     final service = servicesData[serviceCode];
     return service?['name'] ?? serviceCode;
+  }
+
+  String _getDisplayCode(String code, bool isSmallScreen) {
+    if (!isSmallScreen) return code;
+
+    // Shorten PROMO codes to PR + number
+    if (code.startsWith('PROMO')) {
+      final number = code.replaceAll(RegExp(r'[^0-9]'), '');
+      return 'PR$number';
+    }
+
+    // Shorten UPGRADE codes to UP + number
+    if (code.startsWith('UPGRADE')) {
+      final number = code.replaceAll(RegExp(r'[^0-9]'), '');
+      return 'UP$number';
+    }
+
+    return code; // Keep EC codes and others as-is
   }
 
   List<String> _getVehicleTypeOptions() {
@@ -1628,154 +2238,242 @@ class _POSScreenState extends State<POSScreen> {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setState) {
-            return AlertDialog(
-              title: Row(
-                children: [
-                  Icon(Icons.groups, color: Colors.blue.shade600),
-                  const SizedBox(width: 8),
-                  const Text("Assign Team"),
-                ],
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    "Which team will handle this service?",
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              selectedTeam = "Team A";
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: selectedTeam == "Team A"
-                                  ? Colors.blue.shade100
-                                  : Colors.grey.shade100,
-                              border: Border.all(
-                                color: selectedTeam == "Team A"
-                                    ? Colors.blue.shade600
-                                    : Colors.grey.shade300,
-                                width: selectedTeam == "Team A" ? 3 : 1,
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Column(
-                              children: [
-                                Icon(
-                                  Icons.group,
-                                  size: 40,
-                                  color: selectedTeam == "Team A"
-                                      ? Colors.blue.shade600
-                                      : Colors.grey.shade600,
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  "Team A",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                    color: selectedTeam == "Team A"
-                                        ? Colors.blue.shade600
-                                        : Colors.grey.shade700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              selectedTeam = "Team B";
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: selectedTeam == "Team B"
-                                  ? Colors.green.shade100
-                                  : Colors.grey.shade100,
-                              border: Border.all(
-                                color: selectedTeam == "Team B"
-                                    ? Colors.green.shade600
-                                    : Colors.grey.shade300,
-                                width: selectedTeam == "Team B" ? 3 : 1,
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Column(
-                              children: [
-                                Icon(
-                                  Icons.group,
-                                  size: 40,
-                                  color: selectedTeam == "Team B"
-                                      ? Colors.green.shade600
-                                      : Colors.grey.shade600,
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  "Team B",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                    color: selectedTeam == "Team B"
-                                        ? Colors.green.shade600
-                                        : Colors.grey.shade700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              actions: [
-                ElevatedButton(
-                  onPressed: selectedTeam != null
-                      ? () async {
-                          final navigator = Navigator.of(context);
-                          final team = selectedTeam!;
-
-                          await _saveTransactionToFirestore(
-                            cash: cash,
-                            change: change,
-                            assignedTeam: team,
-                          );
-
-                          if (mounted) {
-                            navigator.pop();
-                            _showReceipt(
-                              cash: cash,
-                              change: change,
-                              assignedTeam: team,
-                            );
-                          }
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue.shade600,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                  ),
-                  child: const Text("Confirm Assignment"),
+            return Dialog(
+              insetPadding: const EdgeInsets.all(40),
+              child: Container(
+                width: MediaQuery.of(context).size.width * 0.6,
+                height: MediaQuery.of(context).size.height * 0.5,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.black87, width: 1.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
                 ),
-              ],
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // Header
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.groups, size: 40, color: Colors.blue.shade600),
+                        const SizedBox(width: 12),
+                        Text(
+                          "Assign Team",
+                          style: TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.grey.shade800,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      "Which team will handle this service?",
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.grey.shade700,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 40),
+                    // Content
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: InkWell(
+                              onTap: () {
+                                setState(() {
+                                  selectedTeam = "Team A";
+                                });
+                              },
+                              borderRadius: BorderRadius.circular(16),
+                              child: Container(
+                                height: 200,
+                                padding: const EdgeInsets.all(24),
+                                decoration: BoxDecoration(
+                                  gradient: selectedTeam == "Team A"
+                                      ? LinearGradient(colors: [Colors.blue.shade100, Colors.blue.shade50])
+                                      : LinearGradient(colors: [Colors.grey.shade100, Colors.white]),
+                                  border: Border.all(
+                                    color: selectedTeam == "Team A"
+                                        ? Colors.black87
+                                        : Colors.grey.shade400,
+                                    width: selectedTeam == "Team A" ? 3 : 1.5,
+                                  ),
+                                  borderRadius: BorderRadius.circular(16),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: selectedTeam == "Team A"
+                                          ? Colors.blue.withValues(alpha: 0.3)
+                                          : Colors.black.withValues(alpha: 0.1),
+                                      blurRadius: selectedTeam == "Team A" ? 12 : 6,
+                                      offset: const Offset(0, 4),
+                                    ),
+                                  ],
+                                ),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.group,
+                                      size: 64,
+                                      color: selectedTeam == "Team A"
+                                          ? Colors.blue.shade600
+                                          : Colors.grey.shade600,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      "Team A",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 24,
+                                        color: selectedTeam == "Team A"
+                                            ? Colors.blue.shade600
+                                            : Colors.grey.shade700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: InkWell(
+                              onTap: () {
+                                setState(() {
+                                  selectedTeam = "Team B";
+                                });
+                              },
+                              borderRadius: BorderRadius.circular(16),
+                              child: Container(
+                                height: 200,
+                                padding: const EdgeInsets.all(24),
+                                decoration: BoxDecoration(
+                                  gradient: selectedTeam == "Team B"
+                                      ? LinearGradient(colors: [Colors.green.shade100, Colors.green.shade50])
+                                      : LinearGradient(colors: [Colors.grey.shade100, Colors.white]),
+                                  border: Border.all(
+                                    color: selectedTeam == "Team B"
+                                        ? Colors.black87
+                                        : Colors.grey.shade400,
+                                    width: selectedTeam == "Team B" ? 3 : 1.5,
+                                  ),
+                                  borderRadius: BorderRadius.circular(16),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: selectedTeam == "Team B"
+                                          ? Colors.green.withValues(alpha: 0.3)
+                                          : Colors.black.withValues(alpha: 0.1),
+                                      blurRadius: selectedTeam == "Team B" ? 12 : 6,
+                                      offset: const Offset(0, 4),
+                                    ),
+                                  ],
+                                ),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.group,
+                                      size: 64,
+                                      color: selectedTeam == "Team B"
+                                          ? Colors.green.shade600
+                                          : Colors.grey.shade600,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      "Team B",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 24,
+                                        color: selectedTeam == "Team B"
+                                            ? Colors.green.shade600
+                                            : Colors.grey.shade700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    // Actions Row
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: selectedTeam != null
+                                ? () async {
+                                    final navigator = Navigator.of(context);
+                                    final team = selectedTeam!;
+
+                                    // Save cart data before clearing
+                                    final cartSnapshot = List<Map<String, dynamic>>.from(cart);
+                                    final totalSnapshot = total;
+
+                                    await _saveTransactionToFirestore(
+                                      cash: cash,
+                                      change: change,
+                                      assignedTeam: team,
+                                    );
+
+                                    if (mounted) {
+                                      navigator.pop();
+                                      _showReceipt(
+                                        cash: cash,
+                                        change: change,
+                                        assignedTeam: team,
+                                        cartItems: cartSnapshot,
+                                        total: totalSnapshot,
+                                      );
+                                    }
+                                  }
+                                : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: selectedTeam != null ? Colors.yellow.shade700 : Colors.grey.shade300,
+                              foregroundColor: selectedTeam != null ? Colors.black87 : Colors.grey.shade600,
+                              padding: const EdgeInsets.symmetric(vertical: 20),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(
+                                  color: selectedTeam != null ? Colors.black54 : Colors.grey.shade400,
+                                  width: 1,
+                                ),
+                              ),
+                              elevation: selectedTeam != null ? 4 : 0,
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.check_circle, size: 24),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  "Confirm Assignment",
+                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             );
           },
         );
@@ -1783,184 +2481,720 @@ class _POSScreenState extends State<POSScreen> {
     );
   }
 
-  void _showReceipt({required double cash, required double change, String? assignedTeam}) {
+  void _showReceipt({
+    required double cash,
+    required double change,
+    String? assignedTeam,
+    required List<Map<String, dynamic>> cartItems,
+    required double total,
+  }) {
     showDialog(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: const Text("Receipt"),
-          content: SingleChildScrollView(
+        return Dialog(
+          insetPadding: const EdgeInsets.all(40),
+          child: Container(
+            width: MediaQuery.of(context).size.width * 0.75,
+            height: MediaQuery.of(context).size.height * 0.7,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.black87, width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                ...cart.map((item) {
-                  final price = (item["price"] as num).toDouble();
-                  final qty = (item["quantity"] ?? 0) as int;
-                  final subtotal = price * qty;
-                  return Text(
-                    "${item["code"]} - ${item["category"]}: ₱${subtotal.toStringAsFixed(2)}",
-                  );
-                }),
-                const Divider(),
-                Text("Total: ₱${total.toStringAsFixed(2)}"),
-                Text("Cash: ₱${cash.toStringAsFixed(2)}"),
-                Text("Change: ₱${change.toStringAsFixed(2)}"),
-                if (assignedTeam != null) ...[
-                  const SizedBox(height: 8),
-                  const Divider(),
-                  Text(
-                    "Assigned Team: $assignedTeam",
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Close"),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final pdf = pw.Document();
-
-                final String formattedTime = _formatTimeOfDay(
-                  this.context,
-                  _selectedTime,
-                );
-                final String formattedDate = DateTime.now()
-                    .toString()
-                    .substring(0, 10);
-
-                final robotoRegular = pw.Font.ttf(
-                  await rootBundle.load("Roboto-Regular.ttf"),
-                );
-                final robotoBold = pw.Font.ttf(
-                  await rootBundle.load("Roboto-Bold.ttf"),
-                );
-
-                pdf.addPage(
-                  pw.Page(
-                    build: (pw.Context ctx) {
-                      return pw.DefaultTextStyle(
-                        style: pw.TextStyle(font: robotoRegular, fontSize: 12),
-                        child: pw.Column(
-                          crossAxisAlignment: pw.CrossAxisAlignment.start,
-                          children: [
-                            pw.Text(
-                              "Carwash Receipt",
-                              style: pw.TextStyle(
-                                font: robotoBold,
-                                fontSize: 20,
-                              ),
+                // Header
+                Row(
+                  children: [
+                    Icon(Icons.receipt_long, size: 40, color: Colors.green.shade600),
+                    const SizedBox(width: 12),
+                    Text(
+                      "Transaction Receipt",
+                      style: TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.grey.shade800,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                      iconSize: 32,
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.grey.shade100,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 32),
+                // Content
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Transaction Details Header
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [Colors.grey.shade50, Colors.grey.shade100],
                             ),
-                            pw.SizedBox(height: 6),
-                            pw.Text(
-                              "Date: $formattedDate   Time: $formattedTime",
-                            ),
-                            pw.SizedBox(height: 10),
-                            pw.Table(
-                              border: pw.TableBorder.all(width: 0.5),
-                              columnWidths: {
-                                0: const pw.FlexColumnWidth(2),
-                                1: const pw.FlexColumnWidth(1),
-                                2: const pw.FlexColumnWidth(1),
-                                3: const pw.FlexColumnWidth(1.5),
-                              },
-                              children: [
-                                pw.TableRow(
-                                  decoration: const pw.BoxDecoration(
-                                    color: PdfColors.grey300,
-                                  ),
-                                  children: [
-                                    _cell("Service", robotoBold),
-                                    _cell("Qty", robotoBold),
-                                    _cell("Price", robotoBold),
-                                    _cell("Subtotal", robotoBold),
-                                  ],
+                            border: Border.all(color: Colors.grey.shade300),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "Transaction Details",
+                                style: TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.grey.shade700,
                                 ),
-                                ...cart.map((item) {
-                                  final price = (item["price"] as num)
-                                      .toDouble();
-                                  final qty = (item["quantity"] ?? 0) as int;
-                                  final subtotal = price * qty;
-                                  return pw.TableRow(
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                "Date: ${DateTime.now().toString().substring(0, 10)}",
+                                style: const TextStyle(fontSize: 16),
+                              ),
+                              Text(
+                                "Time: ${_formatTimeOfDay(context, _selectedTime)}",
+                                style: const TextStyle(fontSize: 16),
+                              ),
+                              if (assignedTeam != null)
+                                Text(
+                                  "Assigned Team: $assignedTeam",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.blue.shade600,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        // Services List
+                        Text(
+                          "Services",
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.grey.shade800,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        ...cartItems.map((item) {
+                          final price = (item["price"] as num).toDouble();
+                          final qty = (item["quantity"] ?? 0) as int;
+                          final subtotal = price * qty;
+                          final serviceName = item["name"]?.toString() ?? item["code"]?.toString() ?? "";
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              border: Border.all(color: Colors.grey.shade200),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  flex: 3,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      _cell(
-                                        "${item["code"]} - ${item["category"]}",
-                                        robotoRegular,
+                                      Text(
+                                        serviceName,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 16,
+                                        ),
                                       ),
-                                      _cell("$qty", robotoRegular),
-                                      _cell(
-                                        "₱${price.toStringAsFixed(2)}",
-                                        robotoRegular,
+                                      Text(
+                                        "${item["category"]}",
+                                        style: TextStyle(
+                                          color: Colors.grey.shade600,
+                                          fontSize: 14,
+                                        ),
                                       ),
-                                      _cell(
-                                        "₱${subtotal.toStringAsFixed(2)}",
-                                        robotoRegular,
+                                    ],
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    "Qty: $qty",
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(fontSize: 16),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    "₱${price.toStringAsFixed(2)}",
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(fontSize: 16),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    "₱${subtotal.toStringAsFixed(2)}",
+                                    textAlign: TextAlign.end,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                        const SizedBox(height: 24),
+                        // Payment Summary
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(24),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [Colors.green.shade50, Colors.green.shade100],
+                            ),
+                            border: Border.all(color: Colors.green.shade300, width: 2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                "Payment Summary",
+                                style: TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.grey.shade800,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text("Total:", style: TextStyle(fontSize: 18)),
+                                  Text(
+                                    "₱${total.toStringAsFixed(2)}",
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.green.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text("Cash:", style: TextStyle(fontSize: 18)),
+                                  Text(
+                                    "₱${cash.toStringAsFixed(2)}",
+                                    style: const TextStyle(fontSize: 18),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text("Change:", style: TextStyle(fontSize: 18)),
+                                  Text(
+                                    "₱${change.toStringAsFixed(2)}",
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.blue.shade600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                // Actions
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey.shade300,
+                          foregroundColor: Colors.grey.shade700,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            side: BorderSide(color: Colors.grey.shade400),
+                          ),
+                        ),
+                        child: const Text(
+                          "Close",
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      flex: 2,
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          try {
+                            final pdf = pw.Document();
+
+                            // Generate transaction ID
+                            final transactionId = 'TXN${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}';
+                            final now = DateTime.now();
+                            final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+                            final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
+
+                            // Try to load fonts, fallback to default
+                            pw.Font? regularFont;
+                            pw.Font? boldFont;
+                            try {
+                              regularFont = pw.Font.ttf(await rootBundle.load("assets/fonts/Roboto-Regular.ttf"));
+                              boldFont = pw.Font.ttf(await rootBundle.load("assets/fonts/Roboto-Bold.ttf"));
+                            } catch (e) {
+                              debugPrint('Using default fonts: $e');
+                            }
+
+                            // Thermal receipt style - 80mm width (226.77 points)
+                            pdf.addPage(
+                              pw.Page(
+                                pageFormat: const PdfPageFormat(226.77, double.infinity, marginAll: 10),
+                                build: (pw.Context ctx) {
+                                  return pw.Column(
+                                    crossAxisAlignment: pw.CrossAxisAlignment.center,
+                                    children: [
+                                      // Header - Business Name
+                                      pw.Text(
+                                        "EC CARWASH",
+                                        style: pw.TextStyle(
+                                          font: boldFont,
+                                          fontSize: 16,
+                                          fontWeight: pw.FontWeight.bold,
+                                        ),
+                                      ),
+                                      pw.SizedBox(height: 2),
+                                      pw.Text(
+                                        "Balayan Batangas",
+                                        style: pw.TextStyle(
+                                          font: regularFont,
+                                          fontSize: 8,
+                                        ),
+                                      ),
+                                      pw.SizedBox(height: 4),
+                                      pw.Text(
+                                        "SALES INVOICE",
+                                        style: pw.TextStyle(
+                                          font: boldFont,
+                                          fontSize: 10,
+                                          fontWeight: pw.FontWeight.bold,
+                                        ),
+                                      ),
+                                      pw.SizedBox(height: 8),
+
+                                      // Divider
+                                      pw.Divider(thickness: 1),
+
+                                      // Transaction Info
+                                      pw.Container(
+                                        width: double.infinity,
+                                        child: pw.Column(
+                                          crossAxisAlignment: pw.CrossAxisAlignment.start,
+                                          children: [
+                                            _receiptRow("TXN ID:", transactionId, boldFont),
+                                            _receiptRow("Date:", dateStr, regularFont),
+                                            _receiptRow("Time:", timeStr, regularFont),
+                                            if (currentCustomer != null) ...[
+                                              pw.SizedBox(height: 4),
+                                              _receiptRow("Customer:", currentCustomer!.name, regularFont),
+                                              _receiptRow("Plate No:", currentCustomer!.plateNumber, regularFont),
+                                              if (currentCustomer!.contactNumber.isNotEmpty)
+                                                _receiptRow("Contact:", currentCustomer!.contactNumber, regularFont),
+                                              if (_vehicleTypeForCustomer != null && _vehicleTypeForCustomer!.isNotEmpty)
+                                                _receiptRow("Vehicle:", _vehicleTypeForCustomer!, regularFont),
+                                            ],
+                                            if (assignedTeam != null)
+                                              _receiptRow("Team:", assignedTeam, regularFont),
+                                          ],
+                                        ),
+                                      ),
+
+                                      pw.Divider(thickness: 1),
+
+                                      // Items header
+                                      pw.Container(
+                                        width: double.infinity,
+                                        child: pw.Row(
+                                          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            pw.Expanded(
+                                              flex: 3,
+                                              child: pw.Text(
+                                                "ITEM",
+                                                style: pw.TextStyle(
+                                                  font: boldFont,
+                                                  fontSize: 8,
+                                                  fontWeight: pw.FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                            pw.Container(
+                                              width: 25,
+                                              child: pw.Text(
+                                                "QTY",
+                                                style: pw.TextStyle(
+                                                  font: boldFont,
+                                                  fontSize: 8,
+                                                  fontWeight: pw.FontWeight.bold,
+                                                ),
+                                                textAlign: pw.TextAlign.center,
+                                              ),
+                                            ),
+                                            pw.Container(
+                                              width: 45,
+                                              child: pw.Text(
+                                                "PRICE",
+                                                style: pw.TextStyle(
+                                                  font: boldFont,
+                                                  fontSize: 8,
+                                                  fontWeight: pw.FontWeight.bold,
+                                                ),
+                                                textAlign: pw.TextAlign.right,
+                                              ),
+                                            ),
+                                            pw.Container(
+                                              width: 50,
+                                              child: pw.Text(
+                                                "AMOUNT",
+                                                style: pw.TextStyle(
+                                                  font: boldFont,
+                                                  fontSize: 8,
+                                                  fontWeight: pw.FontWeight.bold,
+                                                ),
+                                                textAlign: pw.TextAlign.right,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+
+                                      pw.Container(
+                                        width: double.infinity,
+                                        height: 0.5,
+                                        color: PdfColors.black,
+                                      ),
+
+                                      // Items
+                                      ...cartItems.map((item) {
+                                        final price = (item["price"] as num).toDouble();
+                                        final qty = (item["quantity"] ?? 0) as int;
+                                        final subtotal = price * qty;
+                                        final serviceName = item["name"]?.toString() ?? item["code"]?.toString() ?? "";
+                                        final serviceCategory = item["category"]?.toString() ?? "";
+                                        return pw.Column(
+                                          children: [
+                                            pw.SizedBox(height: 4),
+                                            pw.Container(
+                                              width: double.infinity,
+                                              child: pw.Column(
+                                                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                                                children: [
+                                                  // Service name
+                                                  pw.Text(
+                                                    serviceName,
+                                                    style: pw.TextStyle(
+                                                      font: boldFont,
+                                                      fontSize: 9,
+                                                      fontWeight: pw.FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                  pw.SizedBox(height: 2),
+                                                  // Price row with qty, price, amount
+                                                  pw.Row(
+                                                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                                                    children: [
+                                                      pw.Text(
+                                                        "  $serviceCategory",
+                                                        style: pw.TextStyle(
+                                                          font: regularFont,
+                                                          fontSize: 7,
+                                                          color: PdfColors.grey700,
+                                                        ),
+                                                      ),
+                                                      pw.Row(
+                                                        children: [
+                                                          pw.Container(
+                                                            width: 25,
+                                                            child: pw.Text(
+                                                              "$qty",
+                                                              style: pw.TextStyle(
+                                                                font: regularFont,
+                                                                fontSize: 9,
+                                                              ),
+                                                              textAlign: pw.TextAlign.center,
+                                                            ),
+                                                          ),
+                                                          pw.Container(
+                                                            width: 45,
+                                                            child: pw.Text(
+                                                              "P${price.toStringAsFixed(2)}",
+                                                              style: pw.TextStyle(
+                                                                font: regularFont,
+                                                                fontSize: 9,
+                                                              ),
+                                                              textAlign: pw.TextAlign.right,
+                                                            ),
+                                                          ),
+                                                          pw.Container(
+                                                            width: 50,
+                                                            child: pw.Text(
+                                                              "P${subtotal.toStringAsFixed(2)}",
+                                                              style: pw.TextStyle(
+                                                                font: regularFont,
+                                                                fontSize: 9,
+                                                              ),
+                                                              textAlign: pw.TextAlign.right,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            pw.SizedBox(height: 4),
+                                          ],
+                                        );
+                                      }),
+
+                                      pw.Divider(thickness: 1),
+
+                                      // Totals
+                                      pw.Container(
+                                        width: double.infinity,
+                                        child: pw.Column(
+                                          children: [
+                                            pw.Row(
+                                              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                pw.Text(
+                                                  "SUBTOTAL:",
+                                                  style: pw.TextStyle(
+                                                    font: regularFont,
+                                                    fontSize: 9,
+                                                  ),
+                                                ),
+                                                pw.Text(
+                                                  "P${total.toStringAsFixed(2)}",
+                                                  style: pw.TextStyle(
+                                                    font: regularFont,
+                                                    fontSize: 9,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            pw.SizedBox(height: 2),
+                                            pw.Row(
+                                              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                pw.Text(
+                                                  "TOTAL:",
+                                                  style: pw.TextStyle(
+                                                    font: boldFont,
+                                                    fontSize: 12,
+                                                    fontWeight: pw.FontWeight.bold,
+                                                  ),
+                                                ),
+                                                pw.Text(
+                                                  "P${total.toStringAsFixed(2)}",
+                                                  style: pw.TextStyle(
+                                                    font: boldFont,
+                                                    fontSize: 12,
+                                                    fontWeight: pw.FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            pw.SizedBox(height: 4),
+                                            pw.Row(
+                                              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                pw.Text(
+                                                  "Cash:",
+                                                  style: pw.TextStyle(
+                                                    font: regularFont,
+                                                    fontSize: 9,
+                                                  ),
+                                                ),
+                                                pw.Text(
+                                                  "P${cash.toStringAsFixed(2)}",
+                                                  style: pw.TextStyle(
+                                                    font: regularFont,
+                                                    fontSize: 9,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            pw.SizedBox(height: 2),
+                                            pw.Row(
+                                              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                pw.Text(
+                                                  "Change:",
+                                                  style: pw.TextStyle(
+                                                    font: regularFont,
+                                                    fontSize: 9,
+                                                  ),
+                                                ),
+                                                pw.Text(
+                                                  "P${change.toStringAsFixed(2)}",
+                                                  style: pw.TextStyle(
+                                                    font: regularFont,
+                                                    fontSize: 9,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+
+                                      pw.Divider(thickness: 1),
+
+                                      // Footer
+                                      pw.SizedBox(height: 4),
+                                      pw.Text(
+                                        "THANK YOU FOR YOUR BUSINESS!",
+                                        style: pw.TextStyle(
+                                          font: boldFont,
+                                          fontSize: 8,
+                                          fontWeight: pw.FontWeight.bold,
+                                        ),
+                                        textAlign: pw.TextAlign.center,
+                                      ),
+                                      pw.SizedBox(height: 2),
+                                      pw.Text(
+                                        "Please come again",
+                                        style: pw.TextStyle(
+                                          font: regularFont,
+                                          fontSize: 7,
+                                        ),
+                                        textAlign: pw.TextAlign.center,
+                                      ),
+                                      pw.SizedBox(height: 8),
+                                      pw.Text(
+                                        "This serves as your official receipt",
+                                        style: pw.TextStyle(
+                                          font: regularFont,
+                                          fontSize: 6,
+                                          fontStyle: pw.FontStyle.italic,
+                                        ),
+                                        textAlign: pw.TextAlign.center,
                                       ),
                                     ],
                                   );
-                                }),
-                              ],
-                            ),
-                            pw.SizedBox(height: 12),
-                            pw.Row(
-                              mainAxisAlignment: pw.MainAxisAlignment.end,
-                              children: [
-                                pw.Column(
-                                  crossAxisAlignment: pw.CrossAxisAlignment.end,
-                                  children: [
-                                    pw.Text(
-                                      "Total: ₱${total.toStringAsFixed(2)}",
-                                      style: pw.TextStyle(font: robotoBold),
-                                    ),
-                                    pw.Text(
-                                      "Cash: ₱${cash.toStringAsFixed(2)}",
-                                    ),
-                                    pw.Text(
-                                      "Change: ₱${change.toStringAsFixed(2)}",
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                            pw.SizedBox(height: 20),
-                            pw.Text(
-                              "Thank you for your payment!",
-                              style: pw.TextStyle(
-                                font: robotoRegular,
-                                fontStyle: pw.FontStyle.italic,
+                                },
                               ),
+                            );
+
+                            await Printing.sharePdf(
+                              bytes: await pdf.save(),
+                              filename: "receipt_$transactionId.pdf",
+                            );
+
+                            if (mounted) {
+                              setState(() => cart.clear());
+                              if (context.mounted) Navigator.pop(context);
+                            }
+                          } catch (e) {
+                            debugPrint('Error generating receipt: $e');
+                            if (mounted && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Error generating receipt: $e'),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                            }
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.yellow.shade700,
+                          foregroundColor: Colors.black87,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            side: BorderSide(color: Colors.black54),
+                          ),
+                          elevation: 4,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.print, size: 20),
+                            const SizedBox(width: 8),
+                            const Text(
+                              "Print as PDF",
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                             ),
                           ],
                         ),
-                      );
-                    },
-                  ),
-                );
-
-                await Printing.sharePdf(
-                  bytes: await pdf.save(),
-                  filename: "receipt.pdf",
-                );
-
-                if (mounted) {
-                  setState(() => cart.clear());
-                  if (context.mounted) Navigator.pop(context);
-                }
-              },
-              child: const Text("Print as PDF"),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
-          ],
+          ),
         );
       },
     );
   }
 }
 
-pw.Widget _cell(String text, pw.Font font) => pw.Padding(
-  padding: const pw.EdgeInsets.all(4),
-  child: pw.Text(text, style: pw.TextStyle(font: font, fontSize: 12)),
-);
+// Helper for thermal receipt row
+pw.Widget _receiptRow(String label, String value, pw.Font? font) {
+  return pw.Row(
+    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+    children: [
+      pw.Text(
+        label,
+        style: pw.TextStyle(
+          font: font,
+          fontSize: 8,
+        ),
+      ),
+      pw.Text(
+        value,
+        style: pw.TextStyle(
+          font: font,
+          fontSize: 8,
+        ),
+      ),
+    ],
+  );
+}

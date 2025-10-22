@@ -6,6 +6,8 @@ import 'package:intl/intl.dart';
 // Navigate to these
 import 'book_service_screen.dart';
 import 'customer_home.dart';
+import 'account_info_screen.dart';
+import 'notifications_screen.dart';
 
 class BookingHistoryScreen extends StatefulWidget {
   const BookingHistoryScreen({super.key});
@@ -33,52 +35,70 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
       );
     } else if (menu == "History") {
       // already here — do nothing
+    } else if (menu == "Notifications") {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+      );
+    } else if (menu == "Account") {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const AccountInfoScreen()),
+      );
     }
   }
 
-  String _formatDateTime(dynamic rawDate, dynamic rawTime) {
+  String _formatDateTime(dynamic rawScheduledDateTime) {
     try {
-      if (rawDate == null) return "N/A";
+      if (rawScheduledDateTime == null) return "N/A";
+
       DateTime dt;
-
-      if (rawDate is Timestamp) {
-        dt = rawDate.toDate();
-      } else if (rawDate is DateTime) {
-        dt = rawDate;
+      if (rawScheduledDateTime is Timestamp) {
+        dt = rawScheduledDateTime.toDate();
+      } else if (rawScheduledDateTime is DateTime) {
+        dt = rawScheduledDateTime;
       } else {
-        dt = DateTime.tryParse(rawDate.toString()) ?? DateTime.now();
-      }
-
-      if (rawTime != null && rawTime.toString().isNotEmpty) {
-        // supports either "14:30" or maps like {hour: 14, minute: 30, formatted: "..."}
-        if (rawTime is Map &&
-            rawTime['hour'] != null &&
-            rawTime['minute'] != null) {
-          dt = DateTime(
-            dt.year,
-            dt.month,
-            dt.day,
-            rawTime['hour'],
-            rawTime['minute'],
-          );
-        } else {
-          final parts = rawTime.toString().split(':');
-          if (parts.length >= 2) {
-            dt = DateTime(
-              dt.year,
-              dt.month,
-              dt.day,
-              int.tryParse(parts[0]) ?? dt.hour,
-              int.tryParse(parts[1]) ?? dt.minute,
-            );
-          }
-        }
+        dt = DateTime.tryParse(rawScheduledDateTime.toString()) ?? DateTime.now();
       }
 
       return DateFormat('MMM dd, yyyy – hh:mm a').format(dt);
     } catch (_) {
-      return rawDate.toString();
+      return rawScheduledDateTime.toString();
     }
+  }
+
+  void _rebookTransaction(Map<String, dynamic> transactionData) {
+    // Extract the customer info and services from the completed transaction
+    final customer = (transactionData['customer'] as Map<String, dynamic>?) ?? {};
+    final plateNumber = customer['plateNumber'] as String?;
+
+    // Get the services from the transaction
+    final rawList = (transactionData['services'] ?? transactionData['items']) as List<dynamic>? ?? [];
+    final services = rawList.cast<Map<String, dynamic>>();
+
+    if (plateNumber == null || services.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Unable to rebook: Missing vehicle or service information'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // Navigate to the booking screen with the rebook data
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => BookServiceScreen(
+          rebookData: {
+            'plateNumber': plateNumber,
+            'services': services,
+            'customer': customer,
+          },
+        ),
+      ),
+    );
   }
 
   @override
@@ -138,6 +158,20 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
                 selectedTileColor: Colors.yellow[100],
                 onTap: () => _onSelect("History"),
               ),
+              ListTile(
+                leading: const Icon(Icons.notifications),
+                title: const Text("Notifications"),
+                selected: _selectedMenu == "Notifications",
+                selectedTileColor: Colors.yellow[100],
+                onTap: () => _onSelect("Notifications"),
+              ),
+              ListTile(
+                leading: const Icon(Icons.account_circle),
+                title: const Text("Account"),
+                selected: _selectedMenu == "Account",
+                selectedTileColor: Colors.yellow[100],
+                onTap: () => _onSelect("Account"),
+              ),
               const Divider(),
               ListTile(
                 leading: const Icon(Icons.logout),
@@ -191,9 +225,9 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
             final customer = (data['customer'] as Map<String, dynamic>?) ?? {};
             final plate = (customer['plateNumber'] ?? 'N/A').toString();
 
-            final date = data['transactionAt'] ?? data['createdAt'];
-            final time = data['time']; // may be {hour, minute, formatted}
-            final formattedDateTime = _formatDateTime(date, time);
+            // Use unified datetime field (transactionAt is the timestamp)
+            final scheduledDateTime = data['transactionAt'] ?? data['createdAt'];
+            final formattedDateTime = _formatDateTime(scheduledDateTime);
 
             // Prefer new schema `services`, fallback to old `items`
             final rawList =
@@ -222,28 +256,49 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: ListTile(
-                title: Text('Plate: $plate'),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Date: $formattedDateTime'),
-                    const SizedBox(height: 4),
-                    Text('Services: $servicesLabel'),
-                    const SizedBox(height: 4),
-                    Text('Total: ₱$total'),
-                  ],
-                ),
-                trailing: const Chip(
-                  label: Text(
-                    'COMPLETED',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
+              child: Column(
+                children: [
+                  ListTile(
+                    title: Text('Plate: $plate'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Date: $formattedDateTime'),
+                        const SizedBox(height: 4),
+                        Text('Services: $servicesLabel'),
+                        const SizedBox(height: 4),
+                        Text('Total: ₱$total'),
+                      ],
+                    ),
+                    trailing: const Chip(
+                      label: Text(
+                        'COMPLETED',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      backgroundColor: Colors.green,
                     ),
                   ),
-                  backgroundColor: Colors.green,
-                ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: () => _rebookTransaction(data),
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: const Text('Rebook'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.yellow[700],
+                            foregroundColor: Colors.black,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             );
           },
@@ -279,9 +334,11 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen> {
             final data = docs[i].data() as Map<String, dynamic>;
             final plate = (data['plateNumber'] ?? 'N/A').toString();
 
-            final date = data['selectedDateTime'] ?? data['date'];
-            final time = data['time'];
-            final formattedDateTime = _formatDateTime(date, time);
+            // Use unified datetime field (with fallback for legacy data)
+            final scheduledDateTime = data['scheduledDateTime'] ??
+                                     data['selectedDateTime'] ??
+                                     data['date'];
+            final formattedDateTime = _formatDateTime(scheduledDateTime);
 
             final services = (data['services'] as List<dynamic>? ?? [])
                 .cast<Map<String, dynamic>>();
