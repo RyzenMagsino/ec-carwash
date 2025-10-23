@@ -1,6 +1,8 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'local_notification_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../data_models/notification_data.dart';
 
 /// Top-level function to handle background messages
 @pragma('vm:entry-point')
@@ -8,16 +10,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   if (kDebugMode) {
     print('Handling a background message: ${message.messageId}');
   }
-
-  // Display notification even when app is in background
-  if (message.notification != null) {
-    await LocalNotificationService.showNotification(
-      id: message.hashCode,
-      title: message.notification!.title ?? 'EC Carwash',
-      body: message.notification!.body ?? 'You have a new notification',
-      payload: message.data.toString(),
-    );
-  }
+  // Avoid duplicate notifications: when a notification payload is sent,
+  // Android/iOS will already display it while app is backgrounded.
+  // Only handle data-only messages here if needed.
+  // if (message.notification == null) { ... }
 }
 
 /// Service to handle Firebase Cloud Messaging
@@ -87,6 +83,22 @@ class FirebaseMessagingService {
         payload: message.data.toString(),
       );
     }
+
+    // Avoid duplicates in the in-app Notifications list:
+    // booking_* notifications are already created by the backend/admin flow.
+    try {
+      final email = FirebaseAuth.instance.currentUser?.email;
+      final type = (message.data['type'] ?? 'general').toString();
+      if (email != null && type == 'general') {
+        await NotificationManager.createNotification(
+          userId: email,
+          title: message.notification?.title ?? 'EC Carwash',
+          message: message.notification?.body ?? 'You have a new notification',
+          type: type,
+          metadata: message.data.isEmpty ? null : Map<String, dynamic>.from(message.data),
+        );
+      }
+    } catch (_) {}
   }
 
   /// Handle notification tap when app is in background or terminated
@@ -95,6 +107,21 @@ class FirebaseMessagingService {
       print('Notification opened app: ${message.messageId}');
       print('Data: ${message.data}');
     }
+
+    // Avoid duplicates: only persist "general" messages opened from tray.
+    try {
+      final email = FirebaseAuth.instance.currentUser?.email;
+      final type = (message.data['type'] ?? 'general').toString();
+      if (email != null && type == 'general') {
+        NotificationManager.createNotification(
+          userId: email,
+          title: message.notification?.title ?? 'EC Carwash',
+          message: message.notification?.body ?? 'You have a new notification',
+          type: type,
+          metadata: message.data.isEmpty ? null : Map<String, dynamic>.from(message.data),
+        );
+      }
+    } catch (_) {}
 
     // Navigate to specific screen based on notification data
     // You can add custom navigation logic here

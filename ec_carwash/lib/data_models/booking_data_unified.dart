@@ -345,6 +345,7 @@ class BookingManager {
 
       final bookingData = bookingDoc.data() as Map<String, dynamic>;
       final userEmail = bookingData['userEmail'] as String?;
+      final source = bookingData['source'] as String?;
 
       // Update the booking status
       await _firestore.collection(_collection).doc(bookingId).update({
@@ -352,8 +353,8 @@ class BookingManager {
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
-      // Create in-app notification for the customer
-      if (userEmail != null && userEmail.isNotEmpty) {
+      // Create in-app notification ONLY for mobile app bookings (not POS bookings)
+      if (userEmail != null && userEmail.isNotEmpty && source == 'customer-app') {
         String notificationTitle = '';
         String notificationMessage = '';
         String notificationType = '';
@@ -428,6 +429,31 @@ class BookingManager {
         'scheduledDateTime': Timestamp.fromDate(newDateTime),
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
+      // Create in-app notification for reschedule (customer side)
+      final updated = await _firestore.collection(_collection).doc(bookingId).get();
+      final bookingData = updated.data() as Map<String, dynamic>?;
+      final userEmail = bookingData?['userEmail'] as String?;
+
+      if (userEmail != null && userEmail.isNotEmpty) {
+        final when = newDateTime;
+        final message = 'Your booking has been rescheduled to '
+            '${when.year.toString().padLeft(4, '0')}-'
+            '${when.month.toString().padLeft(2, '0')}-'
+            '${when.day.toString().padLeft(2, '0')} '
+            '${when.hour.toString().padLeft(2, '0')}:${when.minute.toString().padLeft(2, '0')}';
+
+        await NotificationManager.createNotification(
+          userId: userEmail,
+          title: 'Booking Rescheduled',
+          message: message,
+          type: 'booking_rescheduled',
+          metadata: {
+            'bookingId': bookingId,
+            'scheduledDateTime': Timestamp.fromDate(newDateTime),
+          },
+        );
+      }
     } catch (e) {
       throw Exception('Failed to reschedule booking: $e');
     }
